@@ -41,6 +41,8 @@ interface UniswapRouter {
     function swapExactETHForTokens(
         uint amountOutMin, address[] calldata path, address to, uint deadline
     ) external payable returns (uint[] memory amounts);
+    
+    function getAmountsIn(uint amountOut, address[] memory path) external view returns (uint[] memory amounts);
 }
 
 
@@ -59,6 +61,7 @@ contract SmartBankAccount {
     
     mapping(address => uint) balances;
     mapping(address => uint) test;
+    event myVar(uint amountOut);
     
     receive() external payable{}
     
@@ -80,17 +83,6 @@ contract SmartBankAccount {
         balances[msg.sender] += cEthOfUser;
     }
     
-    function depositToCompund(uint amount) internal {
-        uint256 cEthOfContractBeforeMinting = ceth.balanceOf(address(this)); //this refers to the current contract
-        
-        ceth.mint{value: amount}();
-        
-        uint256 cEthOfContractAfterMinting = ceth.balanceOf(address(this)); // updated balance after minting
-        
-        uint cEthOfUser = cEthOfContractAfterMinting - cEthOfContractBeforeMinting; // the difference is the amount that has been created by the mint() function
-        // cethBalances[msg.sender] += cEthOfUser;
-        balances[msg.sender] += cEthOfUser;
-    }
     
     // allow user to deposit fund using other tokens aside eth
     function addBalanceERC20(address erc20TokenSmartContractAddress) public returns (bool) {
@@ -170,22 +162,23 @@ contract SmartBankAccount {
         return true;
     }
     
-    function withdrawInErc20(uint amount, address erc20TokenAddress) public returns (uint[] memory amounts) {
-        uint rate = getExchangeRate();
-        uint withdraw_value;
-        withdraw_value = (amount*1e8)/rate; // convert amount to Ceth.
-        require(balances[msg.sender] >= withdraw_value, 'insufficient');
-        balances[msg.sender] -= withdraw_value;
-        uint totalBefore = getContractBalance();// to account for interest.
-        require(ceth.redeem(withdraw_value) == 0, 'failed');
-        uint balanceAfter = getContractBalance();
-        // TODO: keep some percentage profit.
-        uint amountToWithdraw = balanceAfter - totalBefore;
+    // allow withdrawal to any curency, provided there is liquidity on uniswap
+    function withdrawInErc20(uint tokenAmount, address erc20TokenAddress) public returns (uint[] memory amounts) {
+        
+        require(tokenAmount > 0, 'non-zero');
         address token = erc20TokenAddress;
         address[] memory path = new address[](2);
         path[0] = uniswap.WETH();
         path[1] = token;
-        amounts = uniswap.swapExactETHForTokens{value: amountToWithdraw}(0, path, msg.sender, block.timestamp);
+        uint equivalentEth = uniswap.getAmountsIn(tokenAmount, path)[0]; // getthe eth equivalent of the token amount passed
+        emit myVar(equivalentEth);
+        require(equivalentEth <= getBalance(msg.sender), 'insufficient');
+        uint totalBefore = getContractCethBalance();// track ceth balance to reflect on user balances
+        require(ceth.redeemUnderlying(equivalentEth) == 0, 'failed');
+        uint balanceAfter = getContractCethBalance();
+        // TODO: keep some percentage profit.
+        balances[msg.sender] -= (totalBefore - balanceAfter); // reflect on user balance
+        amounts = uniswap.swapExactETHForTokens{value: equivalentEth}(0, path, msg.sender, block.timestamp); // swap the eth to the desired user token and send directly to user
     }
     
     function addMoneyToContract() public payable {
